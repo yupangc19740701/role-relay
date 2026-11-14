@@ -1,0 +1,23 @@
+# role-relay configuration
+# The endpoint below is FreeLLMAPI's default local address.
+endpoint: http://localhost:3001/v1
+
+# Used when neither the step nor the role file names a model.
+# FreeLLMAPI accepts "auto" (the router picks) or a specific model id.
+default_model: auto
+
+# Remote endpoints are refused unless this is true (and they must use https).
+allow_remote: false
+
+timeout_seconds: 180
+roles_dir: .agents/roles
+runs_dir: runs
+
+# previous: each role sees the task and the previous role's output.
+# all:      each role sees the task and every earlier output (uses more tokens).
+handoff: previous
+
+steps:
+  - role: planner
+  - role: builder
+  - role: reviewer

@@ -1,0 +1,7 @@
+target/
+runs/
+*.class
+.idea/
+*.iml
+.vscode/
+.env
