@@ -9,6 +9,16 @@ default_model: auto
 # Remote endpoints are refused unless this is true (and they must use https).
 allow_remote: false
 
+# Model used by the "plan" command to choose roles for a task.
+# Pick a specific model; "auto" lets the router choose a different (possibly weak)
+# model each time. See the README section "Choosing a dispatcher model".
+dispatcher_model: gemini-3.5-flash
+max_steps: 6
+
+# Extra attempts when a step hits a temporary failure (429, 500/502/503/504,
+# timeout, or an empty/garbled reply). 0 turns retrying off; at most 3.
+retries: 1
+
 timeout_seconds: 180
 roles_dir: .agents/roles
 runs_dir: runs
@@ -16,6 +26,11 @@ runs_dir: runs
 # previous: each role sees the task and the previous role's output.
 # all:      each role sees the task and every earlier output (uses more tokens).
 handoff: previous
+
+# Whose output to print on screen when a run ends. The first role in this list
+# that appears in the steps wins; if none of them ran, the last step is shown.
+# Every step's full output is always saved in the run log.
+output_from: [translator, builder]
 
 steps:
   - role: planner

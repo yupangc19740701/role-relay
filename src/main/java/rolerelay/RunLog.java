@@ -50,7 +50,7 @@ public final class RunLog {
         }
         sb.append("\nEndpoint: ").append(config.endpoint).append("\nHand-off: ").append(config.handoff).append("\n");
         write("00-task.md", sb.toString());
-        summary.append("# Summary\n\n| Step | Role | Requested model | Answered by | Fallback attempts | Seconds |\n|---|---|---|---|---|---|\n");
+        summary.append("# Summary\n\n| Step | Role | Requested model | Answered by | Fallback attempts | Attempts | Seconds |\n|---|---|---|---|---|---|---|\n");
     }
 
     void step(RelayRunner.StepResult s) {
@@ -61,6 +61,8 @@ public final class RunLog {
                 + "- Response model field: " + nullable(r.responseModel()) + "\n"
                 + "- X-Routed-Via: " + nullable(r.routedVia()) + "\n"
                 + "- X-Fallback-Attempts: " + nullable(r.fallbackAttempts()) + "\n"
+                + "- Attempts: " + s.attempts() + "\n"
+                + retryLines(s.retryErrors())
                 + "- Duration: " + s.millis() + " ms\n\n"
                 + "## Role prompt (system)\n\n" + fence(s.role().prompt()) + "\n"
                 + "## Input (user)\n\n" + fence(s.userContent()) + "\n"
@@ -69,13 +71,15 @@ public final class RunLog {
         summary.append("| ").append(s.index()).append(" | ").append(s.role().name())
                .append(" | ").append(r.requestedModel()).append(" | ").append(r.answeredBy())
                .append(" | ").append(nullable(r.fallbackAttempts()))
+               .append(" | ").append(s.attempts())
                .append(" | ").append(String.format("%.1f", s.millis() / 1000.0)).append(" |\n");
     }
 
-    void failed(int index, Role role, String model, String userContent, String error) {
+    void failed(int index, Role role, String model, String userContent, String error, int attempts, List<String> errors) {
         write(String.format("%02d-%s-FAILED.md", index, role.name()),
                 "# Step " + index + ": " + role.name() + " (FAILED)\n\n- Requested model: " + model
-                        + "\n- Error: " + error + "\n\n## Input (user)\n\n" + fence(userContent));
+                        + "\n- Attempts: " + attempts + "\n" + retryLines(errors)
+                        + "- Final error: " + error + "\n\n## Input (user)\n\n" + fence(userContent));
         summary.append("\nStopped at step ").append(index).append(" (").append(role.name()).append("): ").append(error).append("\n");
         write("summary.md", summary.toString());
     }
@@ -92,6 +96,14 @@ public final class RunLog {
         } catch (IOException e) {
             throw new UncheckedIOException("could not write run log " + dir.resolve(name), e);
         }
+    }
+
+    private static String retryLines(List<String> errors) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < errors.size(); i++) {
+            sb.append("- Attempt ").append(i + 1).append(" failed: ").append(errors.get(i)).append("\n");
+        }
+        return sb.toString();
     }
 
     private static String nullable(String s) {

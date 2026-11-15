@@ -24,6 +24,7 @@ import java.util.Set;
  *   <li>A non-loopback endpoint needs https and an explicit allow_remote: true.</li>
  *   <li>Redirects are not followed; responses over 4 MiB are rejected.</li>
  *   <li>There is no fallback to another endpoint, and the API key is never logged.</li>
+ *   <li>Failures are thrown as {@link LlmException}, marked retryable or not; this class never retries itself.</li>
  * </ul>
  */
 public final class OpenAiCompatibleClient implements LlmClient {
@@ -126,30 +127,30 @@ public final class OpenAiCompatibleClient implements LlmClient {
                 data = in.readNBytes(MAX_RESPONSE_BYTES + 1);
             }
         } catch (IOException e) {
-            throw new IllegalStateException("request to " + chatUri + " failed: " + e.getClass().getSimpleName()
-                    + "; no fallback was attempted");
+            throw new LlmException("request to " + chatUri + " failed: " + e.getClass().getSimpleName(), true);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("request interrupted");
         }
 
         if (data.length > MAX_RESPONSE_BYTES) {
-            throw new IllegalStateException("response exceeds " + MAX_RESPONSE_BYTES + " bytes");
+            throw new LlmException("response exceeds " + MAX_RESPONSE_BYTES + " bytes", false);
         }
         int status = response.statusCode();
         if (status != 200) {
-            throw new IllegalStateException("HTTP " + status + " from " + chatUri + ": " + errorMessage(data));
+            throw new LlmException("HTTP " + status + " from " + chatUri + ": " + errorMessage(data),
+                    LlmException.retryableStatus(status));
         }
 
         JsonNode root;
         try {
             root = json.readTree(data);
         } catch (IOException e) {
-            throw new IllegalStateException("response is not valid JSON");
+            throw new LlmException("response is not valid JSON", true);
         }
         JsonNode content = root.path("choices").path(0).path("message").path("content");
         if (!content.isTextual() || content.asText().isBlank()) {
-            throw new IllegalStateException("response has no text in choices[0].message.content");
+            throw new LlmException("response has no text in choices[0].message.content", true);
         }
         String responseModel = root.path("model").isTextual() ? root.path("model").asText() : null;
         String routedVia = response.headers().firstValue("X-Routed-Via").orElse(null);
@@ -168,6 +169,6 @@ public final class OpenAiCompatibleClient implements LlmClient {
     }
 
     private static String truncate(String s) {
-        return s.length() <= 300 ? s : s.substring(0, 300) + "...";
+        return s.length() <= 2000 ? s : s.substring(0, 2000) + "...";
     }
 }

@@ -12,7 +12,8 @@ import java.util.List;
  * Command line entry point.
  *
  * <pre>
- * java -jar role-relay.jar run   [--config relay.yaml] (--task "..." | --task-file task.md) [--dry-run]
+ * java -jar role-relay.jar plan  [--config relay.yaml] (--task "..." | --task-file task.md)
+ * java -jar role-relay.jar run   [--config relay.yaml|plans/x.yaml] [--task "..." | --task-file task.md] [--dry-run]
  * java -jar role-relay.jar roles [--config relay.yaml]
  * </pre>
  *
@@ -58,6 +59,7 @@ public final class Main {
             return switch (command) {
                 case "roles" -> listRoles(roles, out);
                 case "run" -> runRelay(cfg, roles, task, taskFile, dryRun, apiKey, out, err);
+                case "plan" -> plan(cfg, roles, task, taskFile, apiKey, out, err);
                 default -> {
                     err.println("unknown command: " + command);
                     usage(err);
@@ -86,20 +88,53 @@ public final class Main {
         return 0;
     }
 
-    private static int runRelay(RelayConfig cfg, RoleLoader roles, String task, Path taskFile, boolean dryRun,
-                                String apiKey, PrintStream out, PrintStream err) {
-        if ((task == null) == (taskFile == null)) {
-            err.println("give exactly one of --task or --task-file");
-            return 2;
+    /** Returns the task text, or null after printing an error. A plan file's task is used when none is given. */
+    private static String readTask(String task, Path taskFile, String fromConfig, PrintStream err) {
+        if (task != null && taskFile != null) {
+            err.println("give only one of --task or --task-file");
+            return null;
         }
         if (taskFile != null) {
             try {
-                task = Files.readString(taskFile, StandardCharsets.UTF_8);
+                return Files.readString(taskFile, StandardCharsets.UTF_8);
             } catch (IOException e) {
                 err.println("could not read task file: " + taskFile);
-                return 2;
+                return null;
             }
         }
+        if (task != null) return task;
+        if (fromConfig != null && !fromConfig.isBlank()) return fromConfig;
+        err.println("give --task or --task-file");
+        return null;
+    }
+
+    private static int plan(RelayConfig cfg, RoleLoader roles, String task, Path taskFile, String apiKey,
+                            PrintStream out, PrintStream err) {
+        task = readTask(task, taskFile, null, err);
+        if (task == null) return 2;
+        LlmClient client = new OpenAiCompatibleClient(cfg.endpoint, apiKey, cfg.allowRemote,
+                Duration.ofSeconds(cfg.timeoutSeconds));
+        Dispatcher dispatcher = new Dispatcher(cfg, roles, client);
+        Path plansDir = cfg.resolve("plans");
+        Dispatcher.Plan plan = dispatcher.plan(task, plansDir);
+        Path file = dispatcher.write(plan, task, plansDir);
+        out.println("Plan written: " + file);
+        out.println("Dispatcher answered by: " + plan.result().answeredBy());
+        for (int i = 0; i < plan.steps().size(); i++) {
+            Dispatcher.PlannedStep s = plan.steps().get(i);
+            out.println("  " + (i + 1) + ". " + s.role() + (s.reason().isBlank() ? "" : "  - " + s.reason()));
+        }
+        if (!plan.notes().isBlank()) out.println("Notes: " + plan.notes());
+        out.println();
+        out.println("Review the plan, then run:");
+        out.println("  java -jar target" + java.io.File.separator + "role-relay.jar run --config " + file);
+        return 0;
+    }
+
+    private static int runRelay(RelayConfig cfg, RoleLoader roles, String task, Path taskFile, boolean dryRun,
+                                String apiKey, PrintStream out, PrintStream err) {
+        task = readTask(task, taskFile, cfg.task, err);
+        if (task == null) return 2;
         if (dryRun) {
             OpenAiCompatibleClient.validate(cfg.endpoint, cfg.allowRemote);
             RelayRunner planner = new RelayRunner(cfg, roles, null, null);
@@ -115,13 +150,15 @@ public final class Main {
                 Duration.ofSeconds(cfg.timeoutSeconds));
         RunLog log = new RunLog(cfg.resolve(cfg.runsDir));
         List<RelayRunner.StepResult> results = new RelayRunner(cfg, roles, client, log).run(task);
-        RelayRunner.StepResult last = results.get(results.size() - 1);
-        out.println(last.result().content().strip());
+        RelayRunner.StepResult shown = RelayRunner.shown(results, cfg.outputFrom);
+        out.println(shown.result().content().strip());
         err.println();
         err.println("Run log: " + log.dir());
         for (RelayRunner.StepResult r : results) {
-            err.println("  " + r.index() + ". " + r.role().name() + " -> answered by " + r.result().answeredBy());
+            err.println((r == shown ? "* " : "  ") + r.index() + ". " + r.role().name()
+                    + " -> answered by " + r.result().answeredBy());
         }
+        err.println("(* = output shown above; every step's full output is in the run log)");
         return 0;
     }
 
@@ -135,7 +172,10 @@ public final class Main {
                 role-relay: relay a task through prompt-defined roles
 
                 Usage:
-                  java -jar role-relay.jar run   [--config relay.yaml] (--task "..." | --task-file task.md) [--dry-run]
+                  java -jar role-relay.jar plan  [--config relay.yaml] (--task "..." | --task-file task.md)
+                      Ask dispatcher_model to choose roles; writes plans/<time>.yaml for you to review.
+                  java -jar role-relay.jar run   [--config relay.yaml | plans/<time>.yaml] [--task "..." | --task-file task.md] [--dry-run]
+                      Run the roles in order. A plan file supplies its own task.
                   java -jar role-relay.jar roles [--config relay.yaml]
 
                 Environment:

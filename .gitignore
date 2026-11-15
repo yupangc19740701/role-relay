@@ -5,3 +5,5 @@ runs/
 *.iml
 .vscode/
 .env
+plans/
+plans/

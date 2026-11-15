@@ -37,11 +37,13 @@ public final class RelayConfig {
         public String role;
         /** Optional per-step model; overrides the role file and default_model. */
         public String model;
+        /** Optional note on why this step exists (written by the plan command); not sent to models. */
+        public String reason;
     }
 
     private static final Set<String> KEYS = Set.of("endpoint", "default_model", "allow_remote", "timeout_seconds",
-            "roles_dir", "runs_dir", "handoff", "steps");
-    private static final Set<String> STEP_KEYS = Set.of("role", "model");
+            "roles_dir", "runs_dir", "handoff", "steps", "dispatcher_model", "max_steps", "task", "retries", "output_from");
+    private static final Set<String> STEP_KEYS = Set.of("role", "model", "reason");
 
     public String endpoint = "http://localhost:3001/v1";
     public String defaultModel = "auto";
@@ -51,6 +53,19 @@ public final class RelayConfig {
     public String runsDir = "runs";
     public Handoff handoff = Handoff.previous;
     public List<Step> steps = new ArrayList<>();
+    /** Model used by the plan command to choose roles. Never "auto" unless you accept a random planner. */
+    public String dispatcherModel;
+    /** Upper limit on the number of steps the plan command may produce. */
+    public int maxSteps = 6;
+    /** Extra attempts for a step after a temporary failure (429, 5xx, timeout, empty reply). */
+    public int retries = 1;
+    /**
+     * Roles whose output is printed on screen at the end, in priority order: the first
+     * role in this list that appears in the steps wins. Empty means the last step.
+     */
+    public List<String> outputFrom = new ArrayList<>();
+    /** Optional task stored in a plan file; used by run when no --task is given. */
+    public String task;
 
     /** Directory of the relay.yaml file; relative paths resolve against it. */
     private Path baseDir = Path.of(".");
@@ -104,6 +119,17 @@ public final class RelayConfig {
                     }
                 }
                 case "steps" -> c.steps = steps(v, source);
+                case "dispatcher_model" -> c.dispatcherModel = str(v, key, source);
+                case "max_steps" -> {
+                    if (!(v instanceof Integer i)) throw new IllegalArgumentException(source + ": 'max_steps' must be a whole number");
+                    c.maxSteps = i;
+                }
+                case "task" -> c.task = str(v, key, source);
+                case "output_from" -> c.outputFrom = names(v, key, source);
+                case "retries" -> {
+                    if (!(v instanceof Integer i)) throw new IllegalArgumentException(source + ": 'retries' must be a whole number");
+                    c.retries = i;
+                }
                 default -> throw new IllegalStateException();
             }
         }
@@ -120,12 +146,26 @@ public final class RelayConfig {
             for (Map.Entry<?, ?> e : m.entrySet()) {
                 String key = String.valueOf(e.getKey());
                 if (!STEP_KEYS.contains(key)) throw new IllegalArgumentException(source + ": unknown step key '" + key + "'");
-                if (key.equals("role")) s.role = str(e.getValue(), "role", source);
-                else s.model = str(e.getValue(), "model", source);
+                switch (key) {
+                    case "role" -> s.role = str(e.getValue(), "role", source);
+                    case "model" -> s.model = str(e.getValue(), "model", source);
+                    default -> s.reason = str(e.getValue(), "reason", source);
+                }
             }
             out.add(s);
         }
         return out;
+    }
+
+    /** A single name or a list of names. */
+    private static List<String> names(Object v, String key, String source) {
+        if (v instanceof String s) return List.of(s.strip());
+        if (v instanceof List<?> list) {
+            List<String> out = new ArrayList<>();
+            for (Object o : list) out.add(str(o, key, source));
+            return out;
+        }
+        throw new IllegalArgumentException(source + ": '" + key + "' must be a role name or a list of role names");
     }
 
     private static String str(Object v, String key, String source) {
@@ -142,6 +182,13 @@ public final class RelayConfig {
             }
         }
         if (defaultModel == null || defaultModel.isBlank()) throw new IllegalArgumentException("relay.yaml: 'default_model' is required");
+        for (String r : outputFrom) {
+            if (!RoleLoader.NAME.matcher(r).matches()) {
+                throw new IllegalArgumentException("relay.yaml: 'output_from' must list role names");
+            }
+        }
+        if (retries < 0 || retries > 3) throw new IllegalArgumentException("relay.yaml: 'retries' must be 0-3");
+        if (maxSteps < 1 || maxSteps > 20) throw new IllegalArgumentException("relay.yaml: 'max_steps' must be 1-20");
         if (timeoutSeconds < 5 || timeoutSeconds > 1800) throw new IllegalArgumentException("relay.yaml: 'timeout_seconds' must be 5-1800");
     }
 

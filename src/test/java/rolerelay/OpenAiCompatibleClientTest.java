@@ -71,16 +71,36 @@ class OpenAiCompatibleClientTest {
     void reportsHttpErrorWithoutRetrying() throws Exception {
         String url = serve(429, "{\"error\":{\"message\":\"quota exhausted\"}}", null, null, null);
         var client = new OpenAiCompatibleClient(url, "k", false, Duration.ofSeconds(5));
-        var e = assertThrows(IllegalStateException.class, () -> client.chat("auto", "s", "u"));
+        var e = assertThrows(LlmException.class, () -> client.chat("auto", "s", "u"));
         assertTrue(e.getMessage().contains("429"));
         assertTrue(e.getMessage().contains("quota exhausted"));
+        assertTrue(e.retryable(), "429 is temporary");
+    }
+
+    @Test
+    void authErrorIsNotRetryable() throws Exception {
+        String url = serve(401, "{\"error\":{\"message\":\"bad key\"}}", null, null, null);
+        var client = new OpenAiCompatibleClient(url, "k", false, Duration.ofSeconds(5));
+        var e = assertThrows(LlmException.class, () -> client.chat("auto", "s", "u"));
+        assertFalse(e.retryable());
+    }
+
+    @Test
+    void connectionRefusedIsRetryable() throws Exception {
+        String url = serve(200, "{}", null, null, null);
+        server.stop(0);
+        server = null;
+        var client = new OpenAiCompatibleClient(url, "k", false, Duration.ofSeconds(5));
+        var e = assertThrows(LlmException.class, () -> client.chat("auto", "s", "u"));
+        assertTrue(e.retryable());
     }
 
     @Test
     void rejectsEmptyReply() throws Exception {
         String url = serve(200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}", null, null, null);
         var client = new OpenAiCompatibleClient(url, "k", false, Duration.ofSeconds(5));
-        assertThrows(IllegalStateException.class, () -> client.chat("auto", "s", "u"));
+        var e = assertThrows(LlmException.class, () -> client.chat("auto", "s", "u"));
+        assertTrue(e.retryable(), "an empty reply may succeed on another attempt");
     }
 
     @Test

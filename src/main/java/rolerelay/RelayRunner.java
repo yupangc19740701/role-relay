@@ -5,24 +5,34 @@ import java.util.List;
 
 /**
  * Runs the roles in order. Each role receives the task plus the hand-off from
- * earlier roles; its reply becomes the hand-off for the next role. The relay stops
- * at the first failing step; it does not skip ahead or retry on its own.
+ * earlier roles; its reply becomes the hand-off for the next role. A step that hits
+ * a temporary failure is retried up to {@code retries} times; if it still fails, the
+ * relay stops there and does not skip ahead.
  */
 public final class RelayRunner {
 
-    public record StepResult(int index, Role role, String userContent, ChatResult result, long millis) {
+    public record StepResult(int index, Role role, String userContent, ChatResult result, long millis,
+                             int attempts, List<String> retryErrors) {
+        public StepResult(int index, Role role, String userContent, ChatResult result, long millis) {
+            this(index, role, userContent, result, millis, 1, List.of());
+        }
     }
 
     private final RelayConfig config;
     private final RoleLoader roles;
     private final LlmClient client;
     private final RunLog log;
+    private Retry.Sleeper sleeper = Retry.REAL_SLEEP;
 
     public RelayRunner(RelayConfig config, RoleLoader roles, LlmClient client, RunLog log) {
         this.config = config;
         this.roles = roles;
         this.client = client;
         this.log = log;
+    }
+
+    void setSleeper(Retry.Sleeper sleeper) {
+        this.sleeper = sleeper;
     }
 
     /** Loads every role up front, so a missing or broken role file fails before any model call. */
@@ -32,6 +42,19 @@ public final class RelayRunner {
             loaded.add(roles.load(step.role));
         }
         return loaded;
+    }
+
+    /**
+     * The step whose output is shown on screen: for the first role in outputFrom that
+     * appears in the results, its last occurrence; if none appears, the last step.
+     */
+    public static StepResult shown(List<StepResult> results, List<String> outputFrom) {
+        for (String wanted : outputFrom) {
+            for (int i = results.size() - 1; i >= 0; i--) {
+                if (results.get(i).role().name().equals(wanted)) return results.get(i);
+            }
+        }
+        return results.get(results.size() - 1);
     }
 
     public String modelFor(RelayConfig.Step step, Role role) {
@@ -52,14 +75,16 @@ public final class RelayRunner {
             String model = modelFor(step, role);
             String userContent = handoff(task, done);
             long t0 = System.nanoTime();
-            ChatResult result;
+            Retry.Outcome outcome;
             try {
-                result = client.chat(model, role.prompt(), userContent);
-            } catch (RuntimeException e) {
-                log.failed(i + 1, role, model, userContent, e.getMessage());
-                throw new RelayException("step " + (i + 1) + " (" + role.name() + ") failed: " + e.getMessage(), e);
+                outcome = Retry.call(() -> client.chat(model, role.prompt(), userContent), config.retries, sleeper);
+            } catch (Retry.Exhausted e) {
+                log.failed(i + 1, role, model, userContent, e.getMessage(), e.attempts, e.errors);
+                String tries = e.attempts > 1 ? " after " + e.attempts + " attempts" : "";
+                throw new RelayException("step " + (i + 1) + " (" + role.name() + ") failed" + tries + ": " + e.getMessage(), e);
             }
-            StepResult sr = new StepResult(i + 1, role, userContent, result, (System.nanoTime() - t0) / 1_000_000);
+            StepResult sr = new StepResult(i + 1, role, userContent, outcome.result(), (System.nanoTime() - t0) / 1_000_000,
+                    outcome.attempts(), outcome.errors());
             log.step(sr);
             done.add(sr);
         }
