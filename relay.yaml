@@ -36,3 +36,4 @@ steps:
   - role: planner
   - role: builder
   - role: reviewer
+  - output_from: [translator, builder]
