@@ -23,9 +23,11 @@ public final class Main {
     static final String KEY_ENV = "ROLE_RELAY_API_KEY";
 
     public static void main(String[] args) {
-        PrintStream out = new PrintStream(System.out, true, StandardCharsets.UTF_8);
-        PrintStream err = new PrintStream(System.err, true, StandardCharsets.UTF_8);
-        System.exit(run(args, System.getenv(KEY_ENV), out, err));
+        // Use the JVM's console streams as-is: since Java 18 they encode with the
+        // console's code page (stdout.encoding), e.g. CP950 on Traditional Chinese
+        // Windows. Forcing UTF-8 here garbles CJK text in such consoles.
+        // Run logs are always written as UTF-8 files.
+        System.exit(run(args, System.getenv(KEY_ENV), System.out, System.err));
     }
 
     static int run(String[] args, String apiKey, PrintStream out, PrintStream err) {
